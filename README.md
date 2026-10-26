@@ -68,8 +68,6 @@ Files selected on the public page remain in browser memory. They are not uploade
 
 ## Architecture
 
-![BreastSight Studio working and features](docs/breastsight-working-features.png)
-
 ```text
 Ultrasound image ──► EfficientNet-B0 ──► Image evidence ────┐
                                                             ├─► Dempster fusion ─► Probability + uncertainty
