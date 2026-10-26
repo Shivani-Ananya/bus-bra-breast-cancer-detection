@@ -1,0 +1,18 @@
+seed: 42
+data:
+  metadata_csv: data/experiments/synthetic_augmented/metadata.csv
+  image_root: .
+  split_dir: data/experiments/synthetic_augmented/splits
+  patient_col: patient_id
+  image_col: image_path
+  label_col: diagnosis
+  label_mapping: {benign: 0, malignant: 1}
+  continuous_features: [age]
+  categorical_features: [tissue_h, shape_h, margin_h, posterior_h]
+  subgroup_features: [source, age]
+  source_col: source
+  image_size: [128, 128]
+  batch_size: 16
+  seed: 42
+model: {mode: fusion_evidential, backbone: EfficientNetB0, pretrained: true, backbone_trainable: false, clinical_hidden: [64, 32]}
+training: {epochs: 5, kl_anneal_epochs: 5, learning_rate: 0.0001, output_dir: runs/experiments_v3/synthetic_augmented}

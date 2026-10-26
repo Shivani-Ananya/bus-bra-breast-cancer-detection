@@ -1,0 +1,112 @@
+{
+  "status": "5 experiments completed",
+  "disclaimer": "Five-epoch exploratory models at 128 x 128 pixels; not clinically validated and not for diagnosis.",
+  "experiments": [
+    {
+      "name": "BUS-BRA image-only",
+      "kind": "Image-only baseline",
+      "accuracy": 0.5,
+      "sensitivity": 0.2,
+      "specificity": 0.6956521739130435,
+      "f1": 0.24,
+      "roc_auc": 0.4579710144927537,
+      "mean_uncertainty": 0.5738125443458557,
+      "test_n": 38,
+      "epochs": 5,
+      "test_source": "BUS-BRA",
+      "sources": [
+        {
+          "name": "BUS-BRA",
+          "n": 38,
+          "roc_auc": 0.4579710144927537
+        }
+      ]
+    },
+    {
+      "name": "BUSI image-only",
+      "kind": "Image-only baseline",
+      "accuracy": 0.6938775510204082,
+      "sensitivity": 0.09375,
+      "specificity": 0.9848484848484849,
+      "f1": 0.16666666666666666,
+      "roc_auc": 0.6633522727272727,
+      "mean_uncertainty": 0.5817597508430481,
+      "test_n": 98,
+      "epochs": 5,
+      "test_source": "BUSI",
+      "sources": [
+        {
+          "name": "BUSI",
+          "n": 98,
+          "roc_auc": 0.6633522727272727
+        }
+      ]
+    },
+    {
+      "name": "Combined image-only",
+      "kind": "Cross-source image model",
+      "accuracy": 0.6592592592592592,
+      "sensitivity": 0.043478260869565216,
+      "specificity": 0.9775280898876404,
+      "f1": 0.08,
+      "roc_auc": 0.6284807034684905,
+      "mean_uncertainty": 0.5846335887908936,
+      "test_n": 135,
+      "epochs": 5,
+      "test_source": "BUS-BRA + BUSI",
+      "sources": [
+        {
+          "name": "BUS-BRA",
+          "n": 38,
+          "roc_auc": 0.4057971014492754
+        },
+        {
+          "name": "BUSI",
+          "n": 97,
+          "roc_auc": 0.7101661779081134
+        }
+      ]
+    },
+    {
+      "name": "BUS-BRA multimodal",
+      "kind": "Real clinical + image fusion",
+      "accuracy": 0.5,
+      "sensitivity": 0.2,
+      "specificity": 0.6956521739130435,
+      "f1": 0.24,
+      "roc_auc": 0.46666666666666673,
+      "mean_uncertainty": 0.40081432461738586,
+      "test_n": 38,
+      "epochs": 5,
+      "test_source": "BUS-BRA",
+      "sources": [
+        {
+          "name": "BUS-BRA",
+          "n": 38,
+          "roc_auc": 0.46666666666666673
+        }
+      ]
+    },
+    {
+      "name": "Synthetic-augmented multimodal",
+      "kind": "Synthetic training augmentation",
+      "accuracy": 0.6578947368421053,
+      "sensitivity": 0.3333333333333333,
+      "specificity": 0.8695652173913043,
+      "f1": 0.43478260869565216,
+      "roc_auc": 0.7478260869565218,
+      "mean_uncertainty": 0.4329002797603607,
+      "test_n": 38,
+      "epochs": 5,
+      "test_source": "BUS-BRA",
+      "sources": [
+        {
+          "name": "BUS-BRA",
+          "n": 38,
+          "roc_auc": 0.7478260869565218
+        }
+      ]
+    }
+  ],
+  "interpretation": "Compare sensitivity and source-specific ROC-AUC, not accuracy alone. Synthetic clinical attributes were used only for training; their validation and test cohorts contain real BUS-BRA cases."
+}

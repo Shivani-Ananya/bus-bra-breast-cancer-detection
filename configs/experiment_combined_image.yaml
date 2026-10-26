@@ -1,0 +1,18 @@
+seed: 42
+data:
+  metadata_csv: data/experiments/combined_image/metadata.csv
+  image_root: .
+  split_dir: data/experiments/combined_image/splits
+  patient_col: patient_id
+  image_col: image_path
+  label_col: diagnosis
+  label_mapping: {benign: 0, malignant: 1}
+  continuous_features: [age, lesion_size_mm]
+  categorical_features: [birads]
+  subgroup_features: [source]
+  source_col: source
+  image_size: [128, 128]
+  batch_size: 16
+  seed: 42
+model: {mode: baseline_image, backbone: EfficientNetB0, pretrained: true, backbone_trainable: false, clinical_hidden: [64, 32]}
+training: {epochs: 5, kl_anneal_epochs: 5, learning_rate: 0.0001, output_dir: runs/experiments_v3/combined_image}

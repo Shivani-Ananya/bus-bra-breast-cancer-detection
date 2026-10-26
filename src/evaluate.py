@@ -55,6 +55,28 @@ def subgroup_report(frame, y, p, u, columns):
     return report
 
 
+def source_report(frame, y, p, u, column="source"):
+    """Calculate complete metrics independently for every dataset source."""
+    if column not in frame.columns:
+        return {}
+    report = {}
+    for source in sorted(frame[column].fillna("unknown").astype(str).unique()):
+        mask = frame[column].fillna("unknown").astype(str).to_numpy() == source
+        labels = y[mask]
+        probabilities = p[mask]
+        uncertainty = u[mask]
+        if len(np.unique(labels)) < 2:
+            report[source] = {
+                "n": int(mask.sum()),
+                "accuracy": float(accuracy_score(labels, probabilities.argmax(1))),
+                "roc_auc": None,
+                "mean_uncertainty": float(uncertainty.mean()),
+            }
+        else:
+            report[source] = {"n": int(mask.sum()), **evaluate_arrays(labels, probabilities, uncertainty)}
+    return report
+
+
 def main(config_path):
     cfg = load_config(config_path); model, ds = build_all(cfg)
     model(next(iter(ds["train"]))[0])
@@ -71,6 +93,7 @@ def main(config_path):
     frame = frame[frame[data_cfg["patient_col"]].astype(str).isin(test_ids)].copy().reset_index(drop=True)
     if len(frame) == len(y):
         metrics["subgroups"] = subgroup_report(frame, y, p, u, data_cfg.get("subgroup_features", ["age"]))
+        metrics["by_source"] = source_report(frame, y, p, u, data_cfg.get("source_col", "source"))
         frame["true_label"], frame["predicted_label"] = y, p.argmax(1)
         frame["prob_malignant"], frame["uncertainty"] = p[:, 1], u
         frame.to_csv(out_dir / "test_predictions.csv", index=False)

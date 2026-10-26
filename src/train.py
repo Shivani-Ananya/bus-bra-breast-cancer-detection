@@ -61,14 +61,22 @@ def run_epoch(model, ds, optimizer, annealing, train):
 def main(config_path):
     cfg = load_config(config_path); tf.keras.utils.set_random_seed(cfg.get("seed", 42))
     model, datasets = build_all(cfg)
+    # Create every variable before checkpoint restore. Keras 3 otherwise may
+    # attach restored values to a partially built subclassed model.
+    model(next(iter(datasets["train"]))[0], training=False)
     optimizer = tf.keras.optimizers.Adam(cfg["training"].get("learning_rate", 1e-4))
     out = Path(cfg["training"].get("output_dir", "runs/default")); out.mkdir(parents=True, exist_ok=True)
     ckpt = tf.train.Checkpoint(model=model, optimizer=optimizer)
     manager = tf.train.CheckpointManager(ckpt, str(out / "checkpoints"), max_to_keep=3)
-    if manager.latest_checkpoint: ckpt.restore(manager.latest_checkpoint)
-    best = np.inf; history = []
+    history_path = out / "history.json"
+    history = json.loads(history_path.read_text(encoding="utf-8")) if history_path.exists() else []
+    start_epoch = 0
+    if manager.latest_checkpoint:
+        ckpt.restore(manager.latest_checkpoint)
+        start_epoch = int(manager.latest_checkpoint.rsplit("-", 1)[-1])
+    best = min((row["val"]["loss"] for row in history), default=np.inf)
     epochs, anneal_epochs = cfg["training"]["epochs"], cfg["training"].get("kl_anneal_epochs", 10)
-    for epoch in range(epochs):
+    for epoch in range(start_epoch, epochs):
         annealing = min(1.0, (epoch + 1) / max(1, anneal_epochs))
         train_log = run_epoch(model, datasets["train"], optimizer, annealing, True)
         val_log = run_epoch(model, datasets["val"], optimizer, 1.0, False)
@@ -77,7 +85,7 @@ def main(config_path):
         manager.save(checkpoint_number=epoch + 1)
         if val_log["loss"] < best:
             best = val_log["loss"]; model.save_weights(str(out / "best.weights.h5"))
-    (out / "history.json").write_text(json.dumps(history, indent=2), encoding="utf-8")
+        history_path.write_text(json.dumps(history, indent=2), encoding="utf-8")
 
 
 if __name__ == "__main__":

@@ -57,3 +57,13 @@ def test_home_contains_persistent_workflow_controls():
     assert "Save case & scan" in response.text
     assert "Download PDF" in response.text
     assert "id=\"analyze-case\"" in response.text
+    assert "id=\"results-dashboard\"" in response.text
+
+
+def test_experiment_results_are_published_in_page_api():
+    response = client.get("/api/experiment-results")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "5 experiments completed"
+    assert len(data["experiments"]) == 5
+    assert any(item["name"] == "Synthetic-augmented multimodal" for item in data["experiments"])
