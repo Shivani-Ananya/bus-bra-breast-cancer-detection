@@ -27,7 +27,7 @@ checkpoint
 training-ui.log
 training-error.log
 
-# Reports that may contain research or patient information
+# Reports that may contain sensitive information
 Report_1_20261008.pdf
 
 # Local tooling and OS files
