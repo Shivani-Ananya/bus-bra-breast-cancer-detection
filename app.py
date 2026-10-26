@@ -4,14 +4,26 @@ The full TensorFlow workbench remains in ``streamlit_app.py`` and is run
 locally or on a container host. This lightweight application provides the
 public project site without importing TensorFlow into a serverless function.
 """
-from fastapi import FastAPI
+from fastapi import FastAPI, Header, Query
 from fastapi.responses import HTMLResponse
+from pydantic import BaseModel, Field
+
+from supabase_client import bearer_token, settings as supabase_settings, user_request
 
 app = FastAPI(
     title="BreastSight Studio",
     description="Public project interface for multimodal breast-ultrasound research.",
     version="0.3.0",
 )
+
+
+class CaseCreate(BaseModel):
+    research_id: str = Field(min_length=1, max_length=100)
+    age: float | None = Field(default=None, ge=0, le=120)
+    birads: str | None = Field(default=None, max_length=20)
+    lesion_size_mm: float | None = Field(default=None, ge=0)
+    diagnosis: str | None = Field(default=None, pattern="^(benign|malignant)$")
+    notes: str | None = Field(default=None, max_length=2000)
 
 
 PAGE = r"""<!doctype html>
@@ -105,3 +117,33 @@ async def info() -> dict[str, object]:
         "local_workbench": "streamlit run streamlit_app.py",
         "medical_device": False,
     }
+
+
+@app.get("/api/supabase/status")
+async def supabase_status() -> dict[str, object]:
+    cfg = supabase_settings()
+    return {
+        "configured": cfg.configured,
+        "database": "supabase-postgresql",
+        "storage_bucket": "breastsight-private",
+        "authentication_required": True,
+        "service_role_configured": bool(cfg.service_role_key),
+    }
+
+
+@app.get("/api/cases")
+def list_cases(limit: int = Query(default=50, ge=1, le=200),
+               authorization: str | None = Header(default=None)) -> object:
+    token = bearer_token(authorization)
+    return user_request("GET", "cases", token, query={
+        "select": "id,research_id,age,birads,lesion_size_mm,diagnosis,created_at,updated_at",
+        "order": "created_at.desc",
+        "limit": str(limit),
+    })
+
+
+@app.post("/api/cases", status_code=201)
+def create_case(case: CaseCreate,
+                authorization: str | None = Header(default=None)) -> object:
+    token = bearer_token(authorization)
+    return user_request("POST", "cases", token, payload=case.model_dump(exclude_none=True))
