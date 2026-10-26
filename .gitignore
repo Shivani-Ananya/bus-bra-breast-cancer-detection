@@ -1,0 +1,35 @@
+# Secrets and deployment metadata
+.env
+.env.*
+!.env.example
+.vercel/
+
+# Python environments and caches
+.venv/
+__pycache__/
+**/__pycache__/
+.pytest_cache/
+*.py[cod]
+
+# Research datasets and derived patient splits
+data/
+dataset/
+BrEaST-Lesions_USG-images_and_masks/
+BrEaST-Lesions_USG-images_and_masks-Dec-15-2023.zip
+BrEaST-Lesions-USG-clinical-data-Dec-15-2023.xlsx
+
+# Training artifacts and model weights
+runs/
+*.h5
+*.keras
+*.ckpt
+checkpoint
+training-ui.log
+training-error.log
+
+# Reports that may contain research or patient information
+Report_1_20261008.pdf
+
+# Local tooling and OS files
+.DS_Store
+Thumbs.db

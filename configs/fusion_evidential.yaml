@@ -1,0 +1,26 @@
+seed: 42
+data:
+  metadata_csv: data/raw/metadata.csv
+  image_root: data/raw/images
+  split_dir: data/splits
+  patient_col: patient_id
+  image_col: image_path
+  label_col: diagnosis
+  label_mapping: {benign: 0, malignant: 1}
+  continuous_features: [age, lesion_size_mm]
+  categorical_features: [birads]
+  subgroup_features: [age]
+  image_size: [224, 224]
+  batch_size: 16
+  seed: 42
+model:
+  mode: fusion_evidential
+  backbone: EfficientNetB0
+  pretrained: true
+  backbone_trainable: false
+  clinical_hidden: [64, 32]
+training:
+  epochs: 30
+  kl_anneal_epochs: 10
+  learning_rate: 0.0001
+  output_dir: runs/fusion_evidential
