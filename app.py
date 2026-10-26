@@ -8,7 +8,7 @@ from fastapi import FastAPI, Header, Query
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
-from supabase_client import bearer_token, settings as supabase_settings, user_request
+from supabase_client import bearer_token, database_probe, settings as supabase_settings, user_request
 
 app = FastAPI(
     title="BreastSight Studio",
@@ -120,10 +120,11 @@ async def info() -> dict[str, object]:
 
 
 @app.get("/api/supabase/status")
-async def supabase_status() -> dict[str, object]:
+def supabase_status() -> dict[str, object]:
     cfg = supabase_settings()
     return {
         "configured": cfg.configured,
+        "connected": database_probe(),
         "database": "supabase-postgresql",
         "storage_bucket": "breastsight-private",
         "authentication_required": True,

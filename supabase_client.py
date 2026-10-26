@@ -75,3 +75,27 @@ def user_request(method: str, resource: str, token: str, *,
         raise HTTPException(status_code=exc.code, detail=detail) from exc
     except (URLError, TimeoutError) as exc:
         raise HTTPException(status_code=502, detail="Supabase is temporarily unreachable.") from exc
+
+
+def database_probe() -> bool:
+    """Confirm the configured service can read the migrated schema.
+
+    The probe returns only a boolean and never returns credentials or rows.
+    """
+    cfg = settings()
+    if not cfg.configured or not cfg.service_role_key:
+        return False
+    request = Request(
+        f"{cfg.url}/rest/v1/cases?select=id&limit=1",
+        headers={
+            "apikey": cfg.service_role_key,
+            "Authorization": f"Bearer {cfg.service_role_key}",
+            "Accept": "application/json",
+        },
+    )
+    try:
+        with urlopen(request, timeout=10) as response:
+            response.read()
+            return 200 <= response.status < 300
+    except (HTTPError, URLError, TimeoutError):
+        return False
