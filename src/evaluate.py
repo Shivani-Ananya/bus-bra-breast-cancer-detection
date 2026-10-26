@@ -15,7 +15,8 @@ def expected_calibration_error(y, p, bins=10):
         mask = (confidence > lo) & (confidence <= hi)
         if mask.any():
             acc, conf = (prediction[mask] == y[mask]).mean(), confidence[mask].mean()
-            ece += mask.mean() * abs(acc - conf); rows.append((conf, acc, int(mask.sum())))
+            ece += mask.mean() * abs(acc - conf)
+            rows.append((float(conf), float(acc), int(mask.sum())))
     return float(ece), rows
 
 

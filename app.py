@@ -4,11 +4,19 @@ The full TensorFlow workbench remains in ``streamlit_app.py`` and is run
 locally or on a container host. This lightweight application provides the
 public project site without importing TensorFlow into a serverless function.
 """
-from fastapi import FastAPI, Header, Query
-from fastapi.responses import HTMLResponse
+import json
+import os
+from io import BytesIO
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
+
+from fastapi import FastAPI, Header, HTTPException, Query
+from fastapi.responses import HTMLResponse, Response
 from pydantic import BaseModel, Field
 
-from supabase_client import bearer_token, database_probe, settings as supabase_settings, user_request
+from supabase_client import (auth_user, bearer_token, database_probe,
+                             settings as supabase_settings, storage_signed_url,
+                             user_request)
 
 app = FastAPI(
     title="BreastSight Studio",
@@ -24,6 +32,59 @@ class CaseCreate(BaseModel):
     lesion_size_mm: float | None = Field(default=None, ge=0)
     diagnosis: str | None = Field(default=None, pattern="^(benign|malignant)$")
     notes: str | None = Field(default=None, max_length=2000)
+
+
+class ImageCreate(BaseModel):
+    case_id: str
+    storage_path: str = Field(min_length=3, max_length=500)
+    original_name: str = Field(min_length=1, max_length=255)
+    content_type: str | None = Field(default=None, max_length=100)
+    size_bytes: int | None = Field(default=None, ge=0, le=50 * 1024 * 1024)
+
+
+class PredictionCreate(BaseModel):
+    case_id: str
+    predicted_class: str = Field(pattern="^(benign|malignant)$")
+    malignant_probability: float = Field(ge=0, le=1)
+    uncertainty: float | None = Field(default=None, ge=0, le=1)
+    image_uncertainty: float | None = Field(default=None, ge=0, le=1)
+    clinical_uncertainty: float | None = Field(default=None, ge=0, le=1)
+
+
+class AnalysisRequest(BaseModel):
+    case_id: str
+    image_id: str
+    age: float = Field(ge=0, le=120)
+    birads: str = Field(min_length=1, max_length=20)
+    lesion_size_mm: float = Field(ge=0)
+
+
+def _pdf_escape(value: object) -> str:
+    return str(value).replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+
+
+def simple_report_pdf(lines: list[str]) -> bytes:
+    """Build a small dependency-free PDF suitable for the serverless runtime."""
+    commands = ["BT", "/F1 18 Tf", "54 760 Td", f"({_pdf_escape(lines[0])}) Tj", "/F1 10 Tf"]
+    for line in lines[1:]:
+        commands.extend(["0 -24 Td", f"({_pdf_escape(line)}) Tj"])
+    commands.append("ET")
+    stream = "\n".join(commands).encode("latin-1", errors="replace")
+    objects = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>",
+        b"<< /Length " + str(len(stream)).encode() + b" >>\nstream\n" + stream + b"\nendstream",
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    ]
+    output = BytesIO(); output.write(b"%PDF-1.4\n")
+    offsets = [0]
+    for index, obj in enumerate(objects, 1):
+        offsets.append(output.tell()); output.write(f"{index} 0 obj\n".encode()); output.write(obj); output.write(b"\nendobj\n")
+    xref = output.tell(); output.write(f"xref\n0 {len(objects)+1}\n".encode()); output.write(b"0000000000 65535 f \n")
+    for offset in offsets[1:]: output.write(f"{offset:010d} 00000 n \n".encode())
+    output.write(f"trailer\n<< /Size {len(objects)+1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF".encode())
+    return output.getvalue()
 
 
 PAGE = r"""<!doctype html>
@@ -63,7 +124,7 @@ body{background:linear-gradient(135deg,#f7fbff,#eef8f4);color:var(--text)}.side{
 
 <section class="view" id="account"><div class="top"><div><h1>Account & saved cases</h1><p>Sign in through Supabase to keep de-identified case records between sessions.</p></div><div class="pill" id="auth-pill">Signed out</div></div>
 <div class="grid two"><article class="card"><div class="eyebrow">Secure account</div><h3 id="auth-title">Sign in</h3><div class="field"><label>Email</label><input id="auth-email" type="email" autocomplete="email" placeholder="name@example.com"></div><div class="field"><label>Password</label><input id="auth-password" type="password" autocomplete="current-password" minlength="8" placeholder="At least 8 characters"></div><div class="actions"><button class="btn primary" id="sign-in">Sign in</button><button class="btn" id="sign-up">Create account</button><button class="btn" id="sign-out" hidden>Sign out</button></div><div id="auth-status" class="muted" style="margin-top:12px">Credentials are sent directly to Supabase Auth and are never stored in this page.</div></article>
-<article class="card"><div class="eyebrow">Persistent records</div><h3>Your saved cases</h3><p>Only de-identified research IDs and clinical fields are stored. Ultrasound image persistence will use the private Storage bucket.</p><div class="actions"><button class="btn" id="load-cases">Refresh cases</button></div><div class="file-list" id="saved-cases">Sign in to load saved cases.</div></article></div>
+<article class="card"><div class="eyebrow">Persistent records</div><h3>Your saved cases</h3><p>De-identified clinical fields, private ultrasound scans, predictions, and reports remain available to the account that created them.</p><div class="actions"><button class="btn" id="load-cases">Refresh cases</button></div><div class="file-list" id="saved-cases">Sign in to load saved cases.</div><div id="case-detail"></div></article></div>
 <div class="status warn">Do not enter names, contact details, hospital numbers, or other direct patient identifiers.</div></section>
 
 <section class="view" id="dataset"><div class="top"><div><h1>Dataset & training</h1><p>Add files directly—no computer locations are displayed or required.</p></div><div class="pill" id="dataset-pill">Setup required</div></div>
@@ -71,10 +132,10 @@ body{background:linear-gradient(135deg,#f7fbff,#eef8f4);color:var(--text)}.side{
 <article class="card"><div class="eyebrow">Ultrasound scans</div><h3>Image files</h3><label class="drop" id="image-drop">▧<strong>Drop images here</strong><small>PNG, JPG, JPEG, WEBP — select multiple files</small><input id="image-files" type="file" accept="image/*" multiple></label><div class="file-list" id="image-info">No images selected.</div></article></div>
 <article class="card" style="margin-top:17px"><div class="eyebrow">Readiness</div><h3>Input validation</h3><div id="readiness" class="muted">Add a metadata CSV and at least one image to continue.</div><div class="actions"><button class="btn primary" id="prepare" disabled>Prepare training</button><button class="btn" id="clear-files">Clear files</button></div><div id="training-output"></div></article></section>
 
-<section class="view" id="analysis"><div class="top"><div><h1>Ultrasound analysis</h1><p>Preview a de-identified scan and prepare its clinical context.</p></div><div class="pill">No model checkpoint online</div></div>
+<section class="view" id="analysis"><div class="top"><div><h1>Ultrasound analysis</h1><p>Save a private scan with its clinical context, then run the trained model.</p></div><div class="pill">Secure case workflow</div></div>
 <div class="grid two"><article class="card"><div class="eyebrow">Image input</div><h3>Select one ultrasound image</h3><label class="drop">▧<strong>Drop a scan here</strong><small>PNG, JPG, JPEG, or WEBP</small><input id="scan-file" type="file" accept="image/*"></label><div class="preview" id="preview"><span class="muted">Image preview appears here</span></div></article>
-<article class="card"><div class="eyebrow">Clinical context</div><h3>Patient features</h3><div class="field"><label>De-identified research ID</label><input id="research-id" maxlength="100" placeholder="Example: STUDY-CASE-001"></div><div class="field"><label>Age</label><input id="age" type="number" min="0" max="120" placeholder="Example: 45"></div><div class="field"><label>BI-RADS category</label><select id="birads"><option value="">Select category</option><option>2</option><option>3</option><option>4A</option><option>4B</option><option>4C</option><option>5</option></select></div><div class="field"><label>Lesion size (mm)</label><input id="size" type="number" min="0" step="0.1" placeholder="Example: 16.5"></div><div class="actions"><button class="btn primary" id="validate-case">Validate case</button><button class="btn" id="save-case">Save case</button><button class="btn" id="reset-case">Reset</button></div><div id="case-status"></div></article></div>
-<div class="status warn"><b>Why prediction is unavailable here:</b> this Vercel interface does not contain a trained TensorFlow checkpoint. It will never invent a medical result. Run the full local workbench after training a model.</div></section>
+<article class="card"><div class="eyebrow">Clinical context</div><h3>Patient features</h3><div class="field"><label>De-identified research ID</label><input id="research-id" maxlength="100" placeholder="Example: STUDY-CASE-001"></div><div class="field"><label>Age</label><input id="age" type="number" min="0" max="120" placeholder="Example: 45"></div><div class="field"><label>BI-RADS category</label><select id="birads"><option value="">Select category</option><option>2</option><option>3</option><option>4A</option><option>4B</option><option>4C</option><option>5</option></select></div><div class="field"><label>Lesion size (mm)</label><input id="size" type="number" min="0" step="0.1" placeholder="Example: 16.5"></div><div class="actions"><button class="btn primary" id="save-case">Save case & scan</button><button class="btn" id="analyze-case" disabled>Analyze</button><button class="btn" id="download-report" disabled>Download PDF</button><button class="btn" id="reset-case">Reset</button></div><div id="case-status"></div></article></div>
+<div class="status warn"><b>Research use only:</b> predictions and uncertainty are experimental and must not be used as a diagnosis or treatment decision.</div></section>
 
 <section class="view" id="results"><div class="top"><div><h1>Results</h1><p>Evaluation artifacts appear after a completed local training run.</p></div><div class="pill">Awaiting model run</div></div><div class="hero"><div class="eyebrow">Evaluation workspace</div><h2>No fabricated metrics</h2><p>The online interface deliberately does not show placeholder accuracy or diagnostic values. Train and evaluate the selected experiment locally, then review accuracy, sensitivity, specificity, F1, ROC-AUC, calibration, uncertainty, and subgroup analyses.</p><div class="code">python -m src.evaluate --config configs/baseline_clinical.yaml</div><div class="actions"><button class="btn" data-copy="python -m src.evaluate --config configs/baseline_clinical.yaml">Copy evaluation command</button></div></div></section>
 
@@ -97,7 +158,10 @@ async function authRequest(path){const email=document.querySelector('#auth-email
 document.querySelector('#sign-in').onclick=async()=>{try{const data=await authRequest('token?grant_type=password');if(!data)return;authSession=data;sessionStorage.setItem('breastsight-auth',JSON.stringify(data));updateAuthUI();await loadCases()}catch(error){setAuthMessage(error.message,'bad')}};
 document.querySelector('#sign-up').onclick=async()=>{try{const data=await authRequest('signup');if(!data)return;if(data.access_token){authSession=data;sessionStorage.setItem('breastsight-auth',JSON.stringify(data));updateAuthUI();await loadCases()}else setAuthMessage('Account created. Check your email to confirm the address before signing in.','ok')}catch(error){setAuthMessage(error.message,'bad')}};
 document.querySelector('#sign-out').onclick=()=>{authSession=null;sessionStorage.removeItem('breastsight-auth');document.querySelector('#saved-cases').textContent='Sign in to load saved cases.';updateAuthUI()};
-async function loadCases(){const list=document.querySelector('#saved-cases');if(!authSession?.access_token){list.textContent='Sign in to load saved cases.';return}list.textContent='Loading…';const response=await fetch('/api/cases',{headers:{'Authorization':'Bearer '+authSession.access_token}}),data=await response.json();if(!response.ok){list.innerHTML='<span class="bad">'+safe(data.detail||'Could not load cases.')+'</span>';return}list.innerHTML=data.length?data.map(item=>'<div class="file"><span><b>'+safe(item.research_id)+'</b><br><span class="muted">Age '+safe(item.age??'—')+' · BI-RADS '+safe(item.birads??'—')+' · '+safe(item.lesion_size_mm??'—')+' mm</span></span><span class="ok">saved</span></div>').join(''):'No cases saved yet.'}
+async function loadCases(){const list=document.querySelector('#saved-cases');if(!authSession?.access_token){list.textContent='Sign in to load saved cases.';return}list.textContent='Loading…';const response=await fetch('/api/cases',{headers:{'Authorization':'Bearer '+authSession.access_token}}),data=await response.json();if(!response.ok){list.innerHTML='<span class="bad">'+safe(data.detail||'Could not load cases.')+'</span>';return}list.innerHTML=data.length?data.map(item=>'<button class="file" style="width:100%;background:none;border:0;color:inherit;text-align:left;cursor:pointer" data-case="'+safe(item.id)+'"><span><b>'+safe(item.research_id)+'</b><br><span class="muted">Age '+safe(item.age??'—')+' · BI-RADS '+safe(item.birads??'—')+' · '+safe(item.lesion_size_mm??'—')+' mm</span></span><span class="ok">View</span></button>').join(''):'No cases saved yet.';list.querySelectorAll('[data-case]').forEach(button=>button.onclick=()=>showCase(button.dataset.case))}
+async function showCase(id){const box=document.querySelector('#case-detail');box.innerHTML='<div class="status">Loading case…</div>';const response=await apiFetch('/api/cases/'+id),item=await response.json();if(!response.ok){box.innerHTML='<div class="status warn">'+safe(item.detail||'Could not open case.')+'</div>';return}const prediction=item.predictions[0],image=item.images[0];box.innerHTML='<div class="status"><b>'+safe(item.research_id)+'</b><br>'+safe(item.images.length)+' private scan(s) · '+safe(item.predictions.length)+' analysis result(s)'+(prediction?'<br><b>'+safe(prediction.predicted_class)+'</b> · malignant probability '+(prediction.malignant_probability*100).toFixed(1)+'% · uncertainty '+(prediction.uncertainty*100).toFixed(1)+'%':'<br>No analysis result yet.')+'<div class="actions">'+(image?'<button class="btn" id="view-scan">View scan</button>':'')+'<button class="btn" id="history-report">Download PDF</button></div><div id="history-preview"></div></div>';if(image)document.querySelector('#view-scan').onclick=async()=>{const r=await apiFetch('/api/images/'+image.id+'/url'),d=await r.json();document.querySelector('#history-preview').innerHTML=r.ok?'<div class="preview"><img alt="Private ultrasound" src="'+safe(d.url)+'"></div>':'<span class="bad">Could not load scan.</span>'};document.querySelector('#history-report').onclick=()=>downloadReport(id,item.research_id)}
+function apiFetch(url,options={}){options.headers={...(options.headers||{}),'Authorization':'Bearer '+(authSession?.access_token||'')};return fetch(url,options)}
+async function downloadReport(id,name){const response=await apiFetch('/api/cases/'+id+'/report.pdf');if(!response.ok){const data=await response.json();throw new Error(data.detail||'Could not create report.')}const blob=await response.blob(),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download='BreastSight-'+name+'.pdf';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000)}
 document.querySelector('#load-cases').onclick=()=>loadCases();updateAuthUI();
 function updateReady(){const ready=!!meta&&images.length>0;document.querySelector('#prepare').disabled=!ready;document.querySelector('#dataset-pill').textContent=ready?'Ready to prepare':'Setup required';document.querySelector('#readiness').innerHTML=ready?'<span class="ok">✓ Metadata and images are ready for validation.</span>':'Add a metadata CSV and at least one image to continue.'}
 function setMeta(file){meta=file||null;if(!meta){document.querySelector('#meta-info').textContent='No metadata selected.';updateReady();return}const reader=new FileReader();reader.onload=()=>{const lines=String(reader.result).split(/\r?\n/).filter(Boolean),headers=(lines[0]||'').split(',').map(x=>x.trim()).filter(Boolean);document.querySelector('#meta-info').innerHTML='<div class="file"><span>'+safe(meta.name)+'</span><span class="ok">'+Math.max(0,lines.length-1)+' rows</span></div><div class="muted" style="padding:8px">Columns: '+safe(headers.join(', ')||'none detected')+'</div>';updateReady()};reader.readAsText(meta)}
@@ -107,10 +171,11 @@ function drops(id,cb){const el=document.querySelector(id);['dragenter','dragover
 drops('#meta-drop',f=>setMeta([...f].find(x=>x.name.toLowerCase().endsWith('.csv'))));drops('#image-drop',f=>setImages([...f].filter(x=>x.type.startsWith('image/'))));
 document.querySelector('#clear-files').onclick=()=>{metaInput.value='';imageInput.value='';meta=null;images=[];setMeta(null);setImages([]);document.querySelector('#training-output').innerHTML=''};
 document.querySelector('#prepare').onclick=()=>{document.querySelector('#training-output').innerHTML='<div class="status"><b class="ok">Inputs prepared.</b> Browser security keeps these files on this device. To train the TensorFlow model, add the same files in the local Streamlit workbench.<div class="code">python -m streamlit run streamlit_app.py</div></div>'};
-const scan=document.querySelector('#scan-file');scan.onchange=()=>{const f=scan.files[0];if(!f)return;const url=URL.createObjectURL(f);document.querySelector('#preview').innerHTML='<img alt="Selected ultrasound preview" src="'+url+'">'};
-document.querySelector('#validate-case').onclick=()=>{const age=document.querySelector('#age').value,b=document.querySelector('#birads').value,size=document.querySelector('#size').value;document.querySelector('#case-status').innerHTML=age&&b&&size?'<div class="status"><span class="ok">✓ Case inputs are complete.</span> Add a trained checkpoint in the local workbench to run inference.</div>':'<div class="status warn">Complete age, BI-RADS category, and lesion size.</div>'};
-document.querySelector('#save-case').onclick=async()=>{const researchId=document.querySelector('#research-id').value.trim(),age=document.querySelector('#age').value,birads=document.querySelector('#birads').value,size=document.querySelector('#size').value,status=document.querySelector('#case-status');if(!authSession?.access_token){status.innerHTML='<div class="status warn">Sign in under Account & Cases before saving.</div>';return}if(!researchId||!age||!birads||!size){status.innerHTML='<div class="status warn">Complete the research ID and all clinical fields.</div>';return}const response=await fetch('/api/cases',{method:'POST',headers:{'Authorization':'Bearer '+authSession.access_token,'Content-Type':'application/json'},body:JSON.stringify({research_id:researchId,age:Number(age),birads,lesion_size_mm:Number(size)})}),data=await response.json();status.innerHTML=response.ok?'<div class="status"><span class="ok">✓ Case saved securely in Supabase.</span></div>':'<div class="status warn">'+safe(data.detail||'Could not save this case.')+'</div>';if(response.ok)loadCases()};
-document.querySelector('#reset-case').onclick=()=>{scan.value='';['research-id','age','size'].forEach(id=>document.querySelector('#'+id).value='');document.querySelector('#birads').value='';document.querySelector('#preview').innerHTML='<span class="muted">Image preview appears here</span>';document.querySelector('#case-status').innerHTML=''};
+let activeCase=null,activeImage=null;const scan=document.querySelector('#scan-file');scan.onchange=()=>{const f=scan.files[0];if(!f)return;const url=URL.createObjectURL(f);document.querySelector('#preview').innerHTML='<img alt="Selected ultrasound preview" src="'+url+'">'};
+document.querySelector('#save-case').onclick=async()=>{const researchId=document.querySelector('#research-id').value.trim(),age=document.querySelector('#age').value,birads=document.querySelector('#birads').value,size=document.querySelector('#size').value,file=scan.files[0],status=document.querySelector('#case-status');if(!authSession?.access_token){status.innerHTML='<div class="status warn">Sign in under Account & Cases before saving.</div>';return}if(!researchId||!age||!birads||!size||!file){status.innerHTML='<div class="status warn">Add one ultrasound scan and complete all clinical fields.</div>';return}if(file.size>50*1024*1024||!['image/png','image/jpeg','image/webp'].includes(file.type)){status.innerHTML='<div class="status warn">Use a PNG, JPEG, or WEBP image smaller than 50 MB.</div>';return}status.innerHTML='<div class="status">Saving case and private scan…</div>';const response=await apiFetch('/api/cases',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({research_id:researchId,age:Number(age),birads,lesion_size_mm:Number(size)})}),data=await response.json();if(!response.ok){status.innerHTML='<div class="status warn">'+safe(data.detail||'Could not save this case.')+'</div>';return}activeCase=data[0];const cfg=await getSupabaseConfig(),clean=file.name.replace(/[^a-zA-Z0-9._-]/g,'_'),path=authSession.user.id+'/'+activeCase.id+'/'+crypto.randomUUID()+'-'+clean,upload=await fetch(cfg.url+'/storage/v1/object/breastsight-private/'+path,{method:'POST',headers:{'apikey':cfg.anon_key,'Authorization':'Bearer '+authSession.access_token,'Content-Type':file.type,'x-upsert':'false'},body:file});if(!upload.ok){status.innerHTML='<div class="status warn">Case saved, but the scan upload failed.</div>';return}const registered=await apiFetch('/api/images',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({case_id:activeCase.id,storage_path:path,original_name:file.name,content_type:file.type,size_bytes:file.size})}),imageData=await registered.json();if(!registered.ok){status.innerHTML='<div class="status warn">Scan uploaded, but it could not be linked to the case.</div>';return}activeImage=imageData[0];status.innerHTML='<div class="status"><span class="ok">✓ Case and private scan retained in Supabase.</span> You may now run analysis or download a case report.</div>';document.querySelector('#analyze-case').disabled=false;document.querySelector('#download-report').disabled=false;loadCases()};
+document.querySelector('#analyze-case').onclick=async()=>{if(!activeCase||!activeImage)return;const status=document.querySelector('#case-status');status.innerHTML='<div class="status">Running trained model…</div>';const response=await apiFetch('/api/analyze',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({case_id:activeCase.id,image_id:activeImage.id,age:Number(document.querySelector('#age').value),birads:document.querySelector('#birads').value,lesion_size_mm:Number(document.querySelector('#size').value)})}),data=await response.json();status.innerHTML=response.ok?'<div class="status"><b>'+safe(data.predicted_class)+'</b><br>Malignant probability: '+(data.malignant_probability*100).toFixed(1)+'%<br>Uncertainty: '+(data.uncertainty*100).toFixed(1)+'%<br><span class="muted">Research result only—not a diagnosis.</span></div>':'<div class="status warn">'+safe(data.detail||'Analysis failed.')+'</div>';if(response.ok)loadCases()};
+document.querySelector('#download-report').onclick=()=>activeCase&&downloadReport(activeCase.id,activeCase.research_id).catch(error=>document.querySelector('#case-status').innerHTML='<div class="status warn">'+safe(error.message)+'</div>');
+document.querySelector('#reset-case').onclick=()=>{activeCase=activeImage=null;scan.value='';['research-id','age','size'].forEach(id=>document.querySelector('#'+id).value='');document.querySelector('#birads').value='';document.querySelector('#preview').innerHTML='<span class="muted">Image preview appears here</span>';document.querySelector('#case-status').innerHTML='';document.querySelector('#analyze-case').disabled=true;document.querySelector('#download-report').disabled=true};
 document.querySelectorAll('[data-copy]').forEach(b=>b.onclick=async()=>{await navigator.clipboard.writeText(b.dataset.copy);const old=b.textContent;b.textContent='Copied';setTimeout(()=>b.textContent=old,1200)});
 </script></body></html>"""
 
@@ -176,3 +241,103 @@ def create_case(case: CaseCreate,
                 authorization: str | None = Header(default=None)) -> object:
     token = bearer_token(authorization)
     return user_request("POST", "cases", token, payload=case.model_dump(exclude_none=True))
+
+
+@app.get("/api/cases/{case_id}")
+def case_detail(case_id: str, authorization: str | None = Header(default=None)) -> object:
+    token = bearer_token(authorization)
+    cases = user_request("GET", "cases", token, query={
+        "id": f"eq.{case_id}",
+        "select": "id,research_id,age,birads,lesion_size_mm,diagnosis,created_at,updated_at",
+        "limit": "1",
+    })
+    if not cases:
+        raise HTTPException(status_code=404, detail="Case not found.")
+    images = user_request("GET", "images", token, query={
+        "case_id": f"eq.{case_id}",
+        "select": "id,case_id,storage_path,original_name,content_type,size_bytes,created_at",
+        "order": "created_at.desc",
+    })
+    predictions = user_request("GET", "predictions", token, query={
+        "case_id": f"eq.{case_id}",
+        "select": "id,case_id,predicted_class,malignant_probability,uncertainty,image_uncertainty,clinical_uncertainty,created_at",
+        "order": "created_at.desc",
+    })
+    return {**cases[0], "images": images, "predictions": predictions}
+
+
+@app.post("/api/images", status_code=201)
+def register_image(image: ImageCreate,
+                   authorization: str | None = Header(default=None)) -> object:
+    token = bearer_token(authorization)
+    user = auth_user(token)
+    if not image.storage_path.startswith(f"{user['id']}/"):
+        raise HTTPException(status_code=403, detail="The image path must belong to the signed-in user.")
+    cases = user_request("GET", "cases", token, query={"id": f"eq.{image.case_id}", "select": "id", "limit": "1"})
+    if not cases:
+        raise HTTPException(status_code=404, detail="Case not found.")
+    return user_request("POST", "images", token, payload=image.model_dump(exclude_none=True))
+
+
+@app.get("/api/images/{image_id}/url")
+def image_url(image_id: str, authorization: str | None = Header(default=None)) -> dict[str, str]:
+    token = bearer_token(authorization)
+    rows = user_request("GET", "images", token, query={
+        "id": f"eq.{image_id}", "select": "storage_path", "limit": "1"
+    })
+    if not rows:
+        raise HTTPException(status_code=404, detail="Image not found.")
+    return {"url": storage_signed_url(rows[0]["storage_path"], token)}
+
+
+@app.post("/api/analyze")
+def analyze_case(request_data: AnalysisRequest,
+                 authorization: str | None = Header(default=None)) -> object:
+    token = bearer_token(authorization)
+    service_url = os.getenv("MODEL_API_URL", "").rstrip("/")
+    service_key = os.getenv("MODEL_API_KEY", "")
+    if not service_url:
+        raise HTTPException(status_code=503, detail="The trained-model service is not deployed yet.")
+    cases = user_request("GET", "cases", token, query={"id": f"eq.{request_data.case_id}", "select": "id", "limit": "1"})
+    images = user_request("GET", "images", token, query={"id": f"eq.{request_data.image_id}", "case_id": f"eq.{request_data.case_id}", "select": "id,storage_path", "limit": "1"})
+    if not cases or not images:
+        raise HTTPException(status_code=404, detail="Case or ultrasound image not found.")
+    payload = request_data.model_dump(exclude={"case_id", "image_id"})
+    payload["image_url"] = storage_signed_url(images[0]["storage_path"], token, expires_in=300)
+    api_request = Request(f"{service_url}/predict", data=json.dumps(payload).encode(), method="POST", headers={
+        "Content-Type": "application/json", "Authorization": f"Bearer {service_key}"
+    })
+    try:
+        with urlopen(api_request, timeout=55) as response:
+            result = json.loads(response.read())
+    except HTTPError as exc:
+        raise HTTPException(status_code=502, detail="The model service rejected this analysis.") from exc
+    except (URLError, TimeoutError) as exc:
+        raise HTTPException(status_code=502, detail="The model service is temporarily unavailable.") from exc
+    prediction = PredictionCreate(case_id=request_data.case_id, **result)
+    saved = user_request("POST", "predictions", token, payload=prediction.model_dump(exclude_none=True))
+    return saved[0] if isinstance(saved, list) else saved
+
+
+@app.get("/api/cases/{case_id}/report.pdf")
+def case_report(case_id: str, authorization: str | None = Header(default=None)) -> Response:
+    detail = case_detail(case_id, authorization)
+    latest = detail["predictions"][0] if detail["predictions"] else None
+    lines = [
+        "BreastSight Studio - Research Report",
+        f"Research case: {detail['research_id']}",
+        f"Created: {detail['created_at']}",
+        f"Age: {detail.get('age') or 'Not provided'}",
+        f"BI-RADS: {detail.get('birads') or 'Not provided'}",
+        f"Lesion size: {detail.get('lesion_size_mm') or 'Not provided'} mm",
+        f"Ultrasound files: {len(detail['images'])}",
+        f"Predicted class: {latest['predicted_class'] if latest else 'Not analyzed'}",
+        f"Malignant probability: {latest['malignant_probability']:.1%}" if latest else "Malignant probability: Not available",
+        f"Uncertainty: {latest['uncertainty']:.1%}" if latest and latest.get('uncertainty') is not None else "Uncertainty: Not available",
+        "Model: BreastSight fusion evidential research prototype",
+        "Research use only. This report is not a medical diagnosis.",
+    ]
+    filename = "".join(c if c.isalnum() or c in "-_" else "_" for c in detail["research_id"])
+    return Response(simple_report_pdf(lines), media_type="application/pdf", headers={
+        "Content-Disposition": f'attachment; filename="BreastSight-{filename}.pdf"'
+    })

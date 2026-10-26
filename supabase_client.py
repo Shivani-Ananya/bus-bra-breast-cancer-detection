@@ -77,6 +77,53 @@ def user_request(method: str, resource: str, token: str, *,
         raise HTTPException(status_code=502, detail="Supabase is temporarily unreachable.") from exc
 
 
+def auth_user(token: str) -> dict[str, Any]:
+    """Return the authenticated Supabase user for a caller token."""
+    cfg = settings()
+    if not cfg.configured:
+        raise HTTPException(status_code=503, detail="Supabase is not configured.")
+    request = Request(f"{cfg.url}/auth/v1/user", headers={
+        "apikey": cfg.anon_key,
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/json",
+    })
+    try:
+        with urlopen(request, timeout=15) as response:
+            return json.loads(response.read())
+    except HTTPError as exc:
+        raise HTTPException(status_code=401, detail="The Supabase session is invalid or expired.") from exc
+    except (URLError, TimeoutError) as exc:
+        raise HTTPException(status_code=502, detail="Supabase is temporarily unreachable.") from exc
+
+
+def storage_signed_url(path: str, token: str, expires_in: int = 300) -> str:
+    """Create a short-lived URL for an object the signed-in user may read."""
+    cfg = settings()
+    body = json.dumps({"expiresIn": expires_in}).encode("utf-8")
+    request = Request(
+        f"{cfg.url}/storage/v1/object/sign/breastsight-private/{path}",
+        data=body,
+        method="POST",
+        headers={
+            "apikey": cfg.anon_key,
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        },
+    )
+    try:
+        with urlopen(request, timeout=15) as response:
+            result = json.loads(response.read())
+            signed = result.get("signedURL") or result.get("signedUrl")
+            if not signed:
+                raise HTTPException(status_code=502, detail="Supabase did not return an image URL.")
+            return signed if signed.startswith("http") else f"{cfg.url}/storage/v1{signed}"
+    except HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise HTTPException(status_code=exc.code, detail=detail) from exc
+    except (URLError, TimeoutError) as exc:
+        raise HTTPException(status_code=502, detail="Supabase Storage is temporarily unreachable.") from exc
+
+
 def database_probe() -> bool:
     """Confirm the configured service can read the migrated schema.
 
