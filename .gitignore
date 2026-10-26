@@ -12,8 +12,8 @@ __pycache__/
 *.py[cod]
 
 # Research datasets and derived patient splits
-data/
-dataset/
+/data/
+/dataset/
 BrEaST-Lesions_USG-images_and_masks/
 BrEaST-Lesions_USG-images_and_masks-Dec-15-2023.zip
 BrEaST-Lesions-USG-clinical-data-Dec-15-2023.xlsx
